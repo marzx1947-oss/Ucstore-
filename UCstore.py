@@ -1,16 +1,17 @@
-# UCstore.py — Full merged version with Free UC, Referral, Captcha, Admin flows
+# UCstore.py — Full merged version
+# Features:
+# - User registration via contact
+# - Store/catalog, cart, wishlist
+# - Orders (create, admin confirm/reject)
+# - VISA payment flow (initial code present in original)
+# - Free UC system:
+#   - Subscription check to @marzbon_chanel
+#   - Daily roll (1-5 UC) with weighted chances
+#   - Show collected UC
+#   - Claim 60 UC / 325 UC (asks for 8-15 digit game ID)
+#   - Creates free-UC orders and notifies admins with confirm/reject
+#
 # NOTE: Replace TOKEN with your bot token before running.
-# This file includes:
-# - User registration with contact + captcha (random add/sub)
-# - Referral system: invite link ?start=invite_<user_id> gives inviter +2 UC when invitee completes registration
-# - Free UC system: daily roll, view collected UC, claim 60/325 UC by sending game ID (8-15 digits)
-#   * Upon claim: user's collected UC is deducted (held). Order sent to admins for confirm/reject.
-#   * User gets message "Order accepted, will be credited within 12 hours"
-#   * Admin can confirm -> user receives "UC credited" and order marked confirmed.
-#   * Admin can reject -> user's collected UC is refunded and user notified.
-# - Admin command /process_pending to auto-confirm free_uc orders older than 12 hours.
-# - Store/catalog features minimal included.
-# IMPORTANT: This script does not run background workers. /process_pending must be run by admin (or scheduled externally).
 
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -22,15 +23,13 @@ from telegram.ext import (
 )
 import asyncio, random, datetime, json, os, traceback
 
-# -------------------- CONFIG --------------------
-TOKEN = "8524676045:AAHXHO6tYovrMAAGxAQZUi2Z-TGFBUPeMyY"  # <-- replace
-ADMIN_IDS = [8436218638]  # admin IDs
+# -------------------- Конфиг --------------------
+"8524676045:AAHXHO6tYovrMAAGxAQZUi2Z-TGFBUPeMyY"  # <-- ЗАҲИРА: ИНРО БА ТОКЕНИ ШАХСИИ ШУМО ИВАЗ КУНЕД
+ADMIN_IDS = [8436218638]  # ID-ҳои админҳо (мисол)
 USERS_FILE = "users.json"
 ORDERS_FILE = "orders.json"
-FREE_UC_CHANNEL = "@marzbon_chanel"
-BOT_USERNAME = "Ucstoretjbot"  # without @
 
-# Product items (store)
+# Маҳсулот
 ITEMS = {
     1: {"name": "60 UC", "price": 10},
     2: {"name": "325 UC", "price": 50},
@@ -41,12 +40,19 @@ ITEMS = {
 }
 
 ADMIN_INFO = """UCstore — платформаи фурӯши UC ва хидматҳои рақамии бозӣ.
-Админ: @MARZBON_TJ
+
+🔹 Мо хидматҳои боэътимод ва босифат пешниҳод мекунем.
+🔹 Пардохт бо VISA ва дигар усулҳо.
+🔹 Админ: @MARZBON_TJ
 """
 
+# Рақами VISA барои пардохт (метавонед иваз кунед)
 VISA_NUMBER = "4439200020432471"
 
-# -------------------- Persistence helpers --------------------
+# Канали санҷиши обуна барои UC ройгон
+FREE_UC_CHANNEL = "@marzbon_chanel"
+
+# -------------------- Давомнокӣ (persistence) --------------------
 def load_json(path, default):
     if os.path.exists(path):
         try:
@@ -64,133 +70,76 @@ def save_all():
     save_json(USERS_FILE, users_data)
     save_json(ORDERS_FILE, orders)
 
-users_data = load_json(USERS_FILE, {})   # user_id -> dict
+users_data = load_json(USERS_FILE, {})   # key: user_id (str) -> info
 orders = load_json(ORDERS_FILE, [])      # list of orders
 
-# runtime
-user_carts = {}
-user_wishlist = {}
-broadcast_mode = {}
+# Runtime structures
+user_carts = {}      # user_id -> {item_id: qty}
+user_wishlist = {}   # user_id -> set(item_id)
+broadcast_mode = {}  # admin_user_id -> True/False
 
-# -------------------- Utilities --------------------
-def now_str():
-    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+# -------------------- Ёрдамчӣ --------------------
+async def send_typing_and_text(chat, text):
+    try:
+        await chat.send_chat_action("typing")
+    except:
+        pass
+    await asyncio.sleep(0.12)
+    await chat.send_message(text)
 
-def parse_start_payload(text):
-    # text like "/start invite_12345" or "/start"
-    if not text:
-        return None
-    parts = text.split()
-    if len(parts) >= 2:
-        payload = parts[1]
-        return payload
-    return None
-
-# -------------------- Registration & Captcha --------------------
+# -------------------- /start ва сабти рақам --------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # handle /start and potential invite payload
     if not update.message:
         return
-    text = update.message.text or ""
-    payload = parse_start_payload(text)
-    if payload and payload.startswith("invite_"):
-        try:
-            inviter_id = int(payload.split("_",1)[1])
-            context.user_data["invite_from"] = str(inviter_id)
-        except:
-            pass
-    # prompt for contact if not registered
     user = update.message.from_user
-    if str(user.id) in users_data:
+    user_id = str(user.id)
+
+    if user_id in users_data:
         await update.message.reply_text(f"👋 Салом, {user.first_name}!")
-        await show_main_menu(update.message.chat, str(user.id))
+        await show_main_menu(update.message.chat, user_id)
         return
 
     contact_button = KeyboardButton("📱 Ворид шудан бо рақам", request_contact=True)
+    reply_markup = ReplyKeyboardMarkup([[contact_button]], resize_keyboard=True, one_time_keyboard=True)
     await update.message.reply_text(
         "🔐 Барои истифодаи бот рақами телефони худро фиристед:",
-        reply_markup=ReplyKeyboardMarkup([[contact_button]], resize_keyboard=True, one_time_keyboard=True)
+        reply_markup=reply_markup
     )
 
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # When user shares contact
-    if not update.message or not update.message.contact:
-        return
     contact = update.message.contact
     user = update.message.from_user
     user_id = str(user.id)
 
-    # create user record with pending captcha
     users_data[user_id] = {
         "id": user.id,
         "name": user.first_name or "",
         "username": user.username or "",
         "phone": contact.phone_number,
-        "date": now_str(),
+        "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "free_uc": 0,
-        "last_daily_uc": None,
-        "invite_from": context.user_data.get("invite_from"),
+        "last_claim": None,
+        "last_daily_uc": None
     }
     save_all()
 
-    # start captcha challenge
-    await send_captcha_challenge(update, context)
+    # Notify admins about new user
+    for admin in ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                admin,
+                f"👤 Корбари нав сабт шуд!\n\n"
+                f"🧑 Ном: {user.first_name}\n"
+                f"📱 Рақам: {contact.phone_number}\n"
+                f"🔗 @{user.username or '—'}"
+            )
+        except:
+            pass
 
-async def send_captcha_challenge(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # send random add/sub question, store expected answer in context.user_data
-    a = random.randint(1, 20)
-    b = random.randint(1, 20)
-    op = random.choice(["+", "-"])
-    if op == "-" and b > a:
-        a, b = b, a
-    question = f"{a} {op} {b}"
-    answer = a + b if op == "+" else a - b
-    context.user_data["captcha_answer"] = str(answer)
-    # send prompt
-    if update.message:
-        target = update.message
-    elif update.callback_query:
-        target = update.callback_query.message
-    else:
-        return
-    await target.reply_text(f"🔐 Ҳамоҳангӣ барои амният — ҷавоби саволро нависед:\n{question} = ?")
+    await update.message.reply_text("✅ Шумо бо муваффақият ворид шудед!", reply_markup=ReplyKeyboardRemove())
+    await show_main_menu(update.message.chat, user_id)
 
-async def handle_captcha_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # expects captcha_answer in context.user_data
-    if "captcha_answer" not in context.user_data:
-        return False
-    text = (update.message.text or "").strip()
-    if text == context.user_data["captcha_answer"]:
-        # success: complete registration and reward inviter if any
-        user = update.message.from_user
-        user_id = str(user.id)
-        # clear captcha
-        context.user_data.pop("captcha_answer", None)
-        # reward inviter if exists and not rewarded before
-        invite_from = users_data.get(user_id, {}).get("invite_from")
-        if invite_from:
-            inviter = users_data.get(str(invite_from))
-            if inviter:
-                inviter.setdefault("free_uc", 0)
-                inviter["free_uc"] = inviter.get("free_uc", 0) + 2
-                save_all()
-                # notify inviter
-                try:
-                    await context.bot.send_message(int(invite_from),
-                        f"🎉 Шумо 2 UC барои даъват кардани @{user.username or user.first_name} гирифтед!")
-                except:
-                    pass
-        # welcome and show menu
-        await update.message.reply_text("✅ Шумо бо муваффақият сабт шудед! Ҳоло менюро бинед.")
-        await show_main_menu(update.message.chat, user_id)
-        return True
-    else:
-        # wrong answer, resend a new question
-        await update.message.reply_text("❌ Ҷавоб нодуруст. Боз кӯшиш кунед.")
-        await send_captcha_challenge(update, context)
-        return False
-
-# -------------------- Main Menu --------------------
+# -------------------- Менюи асосӣ (ReplyKeyboard) --------------------
 async def show_main_menu(chat, user_id):
     buttons = [
         ["🛍 Каталог", "❤️ Дилхоҳҳо"],
@@ -199,16 +148,20 @@ async def show_main_menu(chat, user_id):
     ]
     if int(user_id) in ADMIN_IDS:
         buttons.append(["👑 Панели админ"])
-    buttons.append(["🔗 Даъвати дӯстон"])
-    reply_markup = ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=False)
-    try:
-        await chat.send_message("Менюи асосӣ:", reply_markup=reply_markup)
-    except:
-        pass
 
-# -------------------- Catalog/Cart (minimal) --------------------
+    reply_markup = ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=False)
+    await chat.send_message("Менюи асосӣ:", reply_markup=reply_markup)
+
+# -------------------- Каталог (Inline) --------------------
 async def catalog_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    target = update.message if update.message else update.callback_query.message
+    # handle both message and callback query
+    if update.message:
+        target = update.message
+    elif update.callback_query:
+        target = update.callback_query.message
+    else:
+        return
+
     buttons = []
     row = []
     for i, item in ITEMS.items():
@@ -216,67 +169,462 @@ async def catalog_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(row) == 2:
             buttons.append(row)
             row = []
-    if row: buttons.append(row)
+    if row:
+        buttons.append(row)
     buttons.append([InlineKeyboardButton("⬅️ Бозгашт", callback_data="back_main")])
+
     await target.reply_text("🛍 Каталог:", reply_markup=InlineKeyboardMarkup(buttons))
 
 async def select_item_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    item_id = int(q.data.split("_")[1])
+    query = update.callback_query
+    await query.answer()
+    try:
+        item_id = int(query.data.split("_")[1])
+    except:
+        return
     item = ITEMS.get(item_id)
     if not item:
-        await q.message.reply_text("Маҳсулот нест.")
+        await query.message.reply_text("Маҳсулот пайдо нашуд.")
         return
+
     buttons = [
-        [InlineKeyboardButton("🛒 Илова ба сабад", callback_data=f"addcart_{item_id}")],
+        [
+            InlineKeyboardButton("🛒 Илова ба сабад", callback_data=f"addcart_{item_id}"),
+            InlineKeyboardButton("❤️ Ба дилхоҳҳо", callback_data=f"addwish_{item_id}")
+        ],
         [InlineKeyboardButton("⬅️ Бозгашт", callback_data="back_main")]
     ]
-    await q.message.reply_text(f"{item['name']} — {item['price']} TJS", reply_markup=InlineKeyboardMarkup(buttons))
+    await query.message.reply_text(f"🛍 {item['name']} — {item['price']} TJS", reply_markup=InlineKeyboardMarkup(buttons))
 
-# -------------------- Free UC System --------------------
-async def free_uc_menu_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    src = update.message if update.message else update.callback_query.message
-    user = src.from_user
-    user_id = str(user.id)
-    if user_id not in users_data:
-        await src.reply_text("⚠️ Аввал /start кунед ва бақайдгирӣ кунед.")
+async def addcart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = str(query.from_user.id)
+    try:
+        item_id = int(query.data.split("_")[1])
+    except:
         return
-    # check subscription (best-effort)
-    subscribed = False
+    user_carts.setdefault(user_id, {})
+    user_carts[user_id][item_id] = user_carts[user_id].get(item_id, 0) + 1
+    await query.message.reply_text(f"✅ {ITEMS[item_id]['name']} ба сабад илова шуд!")
+
+async def addwish_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = str(query.from_user.id)
+    try:
+        item_id = int(query.data.split("_")[1])
+    except:
+        return
+    user_wishlist.setdefault(user_id, set()).add(item_id)
+    await query.message.reply_text(f"❤️ {ITEMS[item_id]['name']} ба дилхоҳҳо илова шуд!")
+
+async def open_wishlist_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    wishlist = user_wishlist.get(user_id, set())
+    if not wishlist:
+        await update.message.reply_text("❤️ Дилхоҳҳо холист.")
+        return
+
+    for i in list(wishlist):
+        item = ITEMS.get(i)
+        if not item:
+            continue
+        buttons = [
+            [
+                InlineKeyboardButton("🛒 Ба сабад", callback_data=f"addcart_{i}"),
+                InlineKeyboardButton("🗑️ Хок кардан", callback_data=f"removewish_{i}")
+            ]
+        ]
+        await update.message.reply_text(f"❤️ {item['name']} — {item['price']} TJS",
+                                        reply_markup=InlineKeyboardMarkup(buttons))
+
+async def removewish_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("🗑️ Аз дилхоҳҳо ҳазф шуд!")
+    user_id = str(query.from_user.id)
+    try:
+        item_id = int(query.data.split("_")[1])
+    except:
+        return
+    if user_id in user_wishlist:
+        user_wishlist[user_id].discard(item_id)
+    try:
+        await query.message.delete()
+    except:
+        pass
+
+# -------------------- Сабад --------------------
+async def show_cart_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    cart = user_carts.get(user_id, {})
+    if not cart:
+        await update.message.reply_text("🛒 Сабад холист.")
+        return
+    text = "🛍 Маҳсулоти шумо:\n"
+    total = 0
+    for i, qty in cart.items():
+        subtotal = ITEMS[i]["price"] * qty
+        total += subtotal
+        text += f"- {ITEMS[i]['name']} x{qty} = {subtotal} TJS\n"
+    text += f"\n💰 Ҳамагӣ: {total} TJS"
+
+    buttons = [
+        [
+            InlineKeyboardButton("📦 Фармоиш додан", callback_data="checkout"),
+            InlineKeyboardButton("🗑️ Пок кардан", callback_data="clear_cart")
+        ],
+        [InlineKeyboardButton("⬅️ Бозгашт", callback_data="back_main")]
+    ]
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+async def clear_cart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("🧹 Сабад тоза шуд!")
+    user_id = str(query.from_user.id)
+    user_carts[user_id] = {}
+
+# -------------------- Order creation for store purchases --------------------
+def _create_order_record(user_id: str, total: int, extra=None):
+    order_id = random.randint(10000, 99999)
+    order = {
+        "id": order_id,
+        "user_id": user_id,
+        "user_name": users_data.get(user_id, {}).get("name", ""),
+        "username": users_data.get(user_id, {}).get("username", ""),
+        "phone": users_data.get(user_id, {}).get("phone", ""),
+        "total": total,
+        "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "status": "pending",
+        "extra": extra or {}
+    }
+    orders.append(order)
+    save_all()
+    return order
+
+# -------------------- Checkout flow --------------------
+async def checkout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = str(query.from_user.id)
+    cart = user_carts.get(user_id, {})
+    if not cart:
+        await query.message.reply_text("🛒 Сабад холист.")
+        return
+
+    await query.message.reply_text("🎮 Лутфан ID-и бозии худро ворид кунед (фақат рақамҳо):")
+    context.user_data["awaiting_game_id"] = True
+    context.user_data["pending_order_total"] = sum(ITEMS[i]["price"] * q for i, q in cart.items())
+    return
+
+async def get_game_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    if not context.user_data.get("awaiting_game_id"):
+        return
+    game_id = update.message.text.strip()
+    if not game_id.isdigit():
+        await update.message.reply_text("⚠️ Лутфан танҳо рақам ворид кунед (ID-и бозӣ бояд рақам бошад).")
+        return
+    context.user_data["awaiting_game_id"] = False
+
+    total = context.user_data.get("pending_order_total", 0)
+    order = _create_order_record(user_id, total)
+    order["game_id"] = game_id
+    save_all()
+    context.user_data.pop("pending_order_total", None)
+
+    for admin in ADMIN_IDS:
+        try:
+            buttons = [
+                [
+                    InlineKeyboardButton("✅ Тасдиқ", callback_data=f"admin_confirm_{order['id']}"),
+                    InlineKeyboardButton("❌ Рад", callback_data=f"admin_reject_{order['id']}")
+                ]
+            ]
+            await context.bot.send_message(
+                admin,
+                f"📦 Фармоиши нав №{order['id']} аз @{order['username'] or order['user_name']}\n"
+                f"🎮 ID: {game_id}\n"
+                f"📱 {order['phone']}\n"
+                f"💰 {order['total']} TJS\n"
+                f"🕒 {order['time']}",
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+        except:
+            pass
+
+    await update.message.reply_text(f"✅ Фармоиши шумо №{order['id']} сабт шуд!\n🎮 ID-и шумо: {game_id}\nМунтазир шавед барои тасдиқ аз админ.")
+    user_carts[user_id] = {}
+
+# -------------------- Admin initial confirm/reject (store purchases) --------------------
+async def admin_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    try:
+        order_id = int(data.split("_")[-1])
+    except:
+        return
+
+    for o in orders:
+        if o["id"] == order_id:
+            if o["status"] != "pending":
+                await query.message.reply_text(f"Фармоиш аллакай дар ҳолати: {o['status']}")
+                return
+            o["status"] = "awaiting_payment"
+            save_all()
+            try:
+                await context.bot.send_message(
+                    int(o["user_id"]),
+                    f"💳 Барои анҷом додани пардохт, лутфан ба рақами VISA зер пардохт кунед:\n\n🔹 {VISA_NUMBER}\n\nПас аз пардохт, скриншоти тасдиқро ба ин ҷо фиристед 📸"
+                )
+            except:
+                pass
+            await query.message.reply_text(f"📨 Рақами VISA ба @{o['username'] or o['user_name']} фиристода шуд.")
+            return
+    await query.message.reply_text("Фармоиш ёфт нашуд.")
+
+async def admin_reject_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    try:
+        order_id = int(data.split("_")[-1])
+    except:
+        return
+
+    for o in orders:
+        if o["id"] == order_id:
+            if o["status"] != "pending":
+                await query.message.reply_text(f"Фармоиш аллакай дар ҳолати: {o['status']}")
+                return
+            o["status"] = "rejected"
+            save_all()
+            try:
+                await context.bot.send_message(int(o["user_id"]), f"❌ Фармоиши шумо №{o['id']} рад шуд. Лутфан бо админ тамос гиред.")
+            except:
+                pass
+            await query.message.reply_text(f"❌ Фармоиш №{order_id} рад шуд.")
+            return
+    await query.message.reply_text("Фармоиш ёфт нашуд.")
+
+# -------------------- Receiving payment screenshot for store orders --------------------
+async def receive_payment_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    matching = None
+    for o in reversed(orders):
+        if str(o.get("user_id")) == user_id and o.get("status") == "awaiting_payment":
+            matching = o
+            break
+
+    if not matching:
+        await update.message.reply_text("⚠️ Ҳеҷ фармоиши интизори пардохт ёфт нашуд. Лутфан аз админ тасдиқ гиред.")
+        return
+
+    if not update.message.photo:
+        await update.message.reply_text("⚠️ Лутфан скриншот (photo) фиристед.")
+        return
+
+    photo = update.message.photo[-1]
+    file_id = photo.file_id
+
+    matching["status"] = "proof_sent"
+    matching["payment_proof_file_id"] = file_id
+    save_all()
+
+    for admin in ADMIN_IDS:
+        buttons = [
+            [
+                InlineKeyboardButton("✅ Қабул", callback_data=f"payment_accept_{matching['id']}_{user_id}"),
+                InlineKeyboardButton("❌ Рад", callback_data=f"payment_reject_{matching['id']}_{user_id}")
+            ]
+        ]
+        try:
+            await context.bot.send_photo(
+                chat_id=admin,
+                photo=file_id,
+                caption=f"📸 Скриншоти пардохт аз @{update.message.from_user.username or update.message.from_user.first_name}\n"
+                        f"📦 Фармоиш №{matching['id']}\n💰 {matching.get('total','—')} TJS",
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+        except:
+            pass
+
+    await update.message.reply_text("✅ Скриншот қабул шуд! Мунтазир шавед, то админ онро тасдиқ кунад.")
+
+# -------------------- Admin handling of payment accept/reject --------------------
+async def callback_payment_accept_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data.startswith("payment_accept_"):
+        parts = data.split("_")
+        try:
+            order_id = int(parts[2]); user_id = int(parts[3])
+        except:
+            return
+        for o in orders:
+            if o["id"] == order_id and str(o["user_id"]) == str(user_id):
+                o["status"] = "confirmed"
+                save_all()
+                try:
+                    await context.bot.send_message(int(user_id), f"✅ Пардохти шумо барои фармоиши №{order_id} қабул шуд! Ташаккур.")
+                except:
+                    pass
+                await query.message.reply_text(f"✅ Пардохти фармоиш №{order_id} тасдиқ шуд.")
+                return
+        await query.message.reply_text("Фармоиш ёфт нашуд.")
+    elif data.startswith("payment_reject_"):
+        parts = data.split("_")
+        try:
+            order_id = int(parts[2]); user_id = int(parts[3])
+        except:
+            return
+        for o in orders:
+            if o["id"] == order_id and str(o["user_id"]) == str(user_id):
+                o["status"] = "rejected"
+                save_all()
+                try:
+                    await context.bot.send_message(int(user_id), f"❌ Пардохти шумо барои фармоиши №{order_id} рад шуд. Лутфан бо админ тамос гиред.")
+                except:
+                    pass
+                await query.message.reply_text(f"❌ Пардохти фармоиш №{order_id} рад шуд.")
+                return
+        await query.message.reply_text("Фармоиш ёфт нашуд.")
+
+# -------------------- Admin panel --------------------
+async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    user_id = str(query.from_user.id)
+
+    if data == "admin_users":
+        if not users_data:
+            await query.message.reply_text("🚫 Ҳеҷ корбар сабт нашудааст.")
+            return
+        text = "📋 Рӯйхати корбарон:\n\n"
+        for u in users_data.values():
+            text += f"👤 {u.get('name','—')} — {u.get('phone','—')} (id: {u.get('id')})\n"
+        await query.message.reply_text(text)
+    elif data == "admin_orders":
+        if not orders:
+            await query.message.reply_text("📦 Ҳеҷ фармоиш нест.")
+            return
+        text = "📦 Рӯйхати фармоишҳо:\n\n"
+        for o in orders:
+            text += f"#{o['id']} — @{o.get('username') or o.get('user_name')} — {o.get('total', o.get('pack',0))} — {o['status']}\n"
+        await query.message.reply_text(text)
+    elif data == "admin_broadcast":
+        broadcast_mode[user_id] = True
+        await query.message.reply_text("✏️ Ҳозир матни паёмро ворид кунед — он ба ҳамаи корбарон фиристода мешавад.")
+    elif data == "back_main":
+        await show_main_menu(query.message.chat, user_id)
+
+# -------------------- Text & menu handler --------------------
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    user_id = str(update.message.from_user.id)
+
+    if broadcast_mode.get(user_id):
+        msg = text
+        count = 0
+        for uid in list(users_data.keys()):
+            try:
+                await context.bot.send_message(int(uid), f"📣 Паём аз админ:\n\n{msg}")
+                count += 1
+            except:
+                pass
+        await update.message.reply_text(f"✅ Паём ба {count} корбар фиристода шуд.")
+        broadcast_mode[user_id] = False
+        return
+
+    if text == "🛍 Каталог":
+        await catalog_handler(update, context)
+    elif text == "❤️ Дилхоҳҳо":
+        await open_wishlist_from_text(update, context)
+    elif text == "🛒 Сабад":
+        await show_cart_from_text(update, context)
+    elif text == "ℹ Маълумот":
+        await update.message.reply_text(ADMIN_INFO)
+    elif text == "💬 Профили админ":
+        await update.message.reply_text(
+            "Барои тамос бо админ зер кунед:",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("💬 Профили админ", url=f"tg://user?id={ADMIN_IDS[0]}")]]
+            )
+        )
+    elif text == "👑 Панели админ" and int(user_id) in ADMIN_IDS:
+        buttons = [
+            [InlineKeyboardButton("📋 Рӯйхати корбарон", callback_data="admin_users"),
+             InlineKeyboardButton("📦 Фармоишҳо", callback_data="admin_orders")],
+            [InlineKeyboardButton("📣 Паём ба корбарон", callback_data="admin_broadcast")],
+            [InlineKeyboardButton("⬅️ Бозгашт", callback_data="back_main")]
+        ]
+        await update.message.reply_text("👑 Панели админ:", reply_markup=InlineKeyboardMarkup(buttons))
+    elif text == "🎁 UC ройгон":
+        await free_uc_menu(update, context)
+    else:
+        # If awaiting game id from checkout or awaiting_free_id from free UC flows, handle in text_router
+        await update.message.reply_text("🤖 Лутфан аз тугмаҳои меню истифода баред.")
+
+# -------------------- Free UC system (handlers) --------------------
+async def free_uc_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Works for message as starting point
+    if update.message:
+        chat = update.message.chat
+        from_user = update.message.from_user
+    elif update.callback_query:
+        chat = update.callback_query.message.chat
+        from_user = update.callback_query.from_user
+    else:
+        return
+
+    user_id = str(from_user.id)
+    # check user present
+    if user_id not in users_data:
+        await chat.send_message("⚠️ Аввал /start кунед.")
+        return
+
+    # try to check subscription — wrap to avoid exceptions if private channel or bot not present
     try:
         member = await context.bot.get_chat_member(FREE_UC_CHANNEL, int(user_id))
-        subscribed = member.status in ("member", "creator", "administrator")
+        subscribed = member.status in ["member", "administrator", "creator"]
     except Exception:
+        # if error (e.g., bot not in channel, or channel private), fallback to asking user to subscribe via link
         subscribed = False
+
     if not subscribed:
         btn = InlineKeyboardMarkup([
             [InlineKeyboardButton("📢 Обуна шудан", url=f"https://t.me/{FREE_UC_CHANNEL.strip('@')}")],
             [InlineKeyboardButton("🔄 Санҷиш", callback_data="check_sub_ucfree")]
         ])
-        await src.reply_text("📢 Барои истифодаи UC ройгон ба канали мо обуна шавед:", reply_markup=btn)
+        await chat.send_message("📢 Барои истифодаи UC-и ройгон ба канали мо обуна шавед:", reply_markup=btn)
         return
+
     btn = InlineKeyboardMarkup([
         [InlineKeyboardButton("🎲 Гирифтани UC-и рӯзона", callback_data="daily_uc")],
         [InlineKeyboardButton("📊 UC-и ҷамъшуда", callback_data="my_uc")],
         [InlineKeyboardButton("🎁 60 UC", callback_data="claim_60")],
-        [InlineKeyboardButton("🎁 325 UC", callback_data="claim_325")],
-        [InlineKeyboardButton("🔗 Даъвати дӯстон", callback_data="invite_link")]
+        [InlineKeyboardButton("🎁 325 UC", callback_data="claim_325")]
     ])
-    await src.reply_text("🎁 Менюи UC ройгон:", reply_markup=btn)
+    await chat.send_message("🎁 Менюи UC ройгон:", reply_markup=btn)
 
 async def check_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    await free_uc_menu_entry(update, context)
+    # re-run free uc menu: pass callback query itself so it can use callback user
+    await free_uc_menu(update, context)
 
 async def daily_uc_roll(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
+    q = update.callback_query
+    await q.answer()
     user_id = str(q.from_user.id)
     user = users_data.get(user_id)
     if not user:
         await q.message.reply_text("⚠️ Аввал /start кунед.")
         return
+
     now = datetime.datetime.now()
     last = user.get("last_daily_uc")
     if last:
@@ -288,6 +636,7 @@ async def daily_uc_roll(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
         except:
             pass
+
     roll = random.choices([1,2,3,4,5], weights=[70,20,7,2,1])[0]
     user["free_uc"] = user.get("free_uc", 0) + roll
     user["last_daily_uc"] = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -346,8 +695,8 @@ async def get_free_uc_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users_data[user_id] = user
     save_all()
 
-    # Create order for admin (free_uc)
-    order_id = random.randint(10000,99999)
+    # Create order for admin (similar to purchase)
+    order_id = random.randint(10000, 99999)
     order = {
         "id": order_id,
         "user_id": user_id,
@@ -357,8 +706,8 @@ async def get_free_uc_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "type": "free_uc",
         "pack": amount,
         "game_id": t,
-        "status": "pending_admin",
-        "created_at": now_str(),
+        "status": "pending",
+        "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     orders.append(order)
     save_all()
@@ -372,17 +721,16 @@ async def get_free_uc_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
             await context.bot.send_message(
                 admin,
-                f"📦 Дархости UC ройгон №{order_id}\n"
+                f"📦 Фармоиши UC ройгон №{order_id}\n"
                 f"👤 @{order['username']}\n"
                 f"🎮 ID: {t}\n"
-                f"🎁 Пакет: {amount} UC\n"
-                f"⏱ Сохта шуд: {order['created_at']}",
+                f"🎁 Пакет: {amount} UC",
                 reply_markup=btn
             )
         except:
             pass
 
-    await update.message.reply_text(f"✅ Дархости шумо барои {amount} UC сабт шуд. Фармоиш қабул шуд — дар давоми 12 соат UC ба ҳисоби шумо ворид мешавад.\n(Админ онро тасдиқ ё рад карда метавонад.)")
+    await update.message.reply_text(f"🎁 Дархости {amount} UC ба админ фиристода шуд! (Фармоиш №{order_id})")
 
 async def admin_confirm_free(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -393,18 +741,16 @@ async def admin_confirm_free(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     for o in orders:
         if o["id"] == order_id and o.get("type") == "free_uc":
-            if o["status"] != "pending_admin":
+            if o["status"] != "pending":
                 await q.message.reply_text(f"Фармоиш аллакай дар ҳолати: {o['status']}")
                 return
             o["status"] = "confirmed"
-            o["confirmed_at"] = now_str()
             save_all()
             try:
-                uid = int(o["user_id"])
-                await context.bot.send_message(uid, f"✅ Дархости UC (№{order_id}) тасдиқ шуд. {o['pack']} UC ба ҳисоби шумо ворид карда шуд.")
+                await context.bot.send_message(int(o["user_id"]), f"✅ Дархости UC (№{order_id}) тасдиқ шуд! Ташаккур.")
             except:
                 pass
-            await q.message.reply_text("✅ Тасдиқ шуд ва паём фиристода шуд.")
+            await q.message.reply_text("✅ Тасдиқ шуд.")
             return
     await q.message.reply_text("Фармоиш ёфт нашуд.")
 
@@ -417,295 +763,158 @@ async def admin_reject_free(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     for o in orders:
         if o["id"] == order_id and o.get("type") == "free_uc":
-            if o["status"] != "pending_admin":
-                await q.message.reply_text(f"Фармоиш аллакай дар ҳолати: {o['status']}")
-                return
-            o["status"] = "rejected"
-            o["rejected_at"] = now_str()
-            save_all()
-            # refund user's collected UC
-            try:
-                uid = str(o["user_id"])
-                if uid in users_data:
-                    users_data[uid]["free_uc"] = users_data[uid].get("free_uc",0) + o.get("pack",0)
-                    save_all()
-                    await context.bot.send_message(int(uid), f"❌ Дархости UC (№{order_id}) рад шуд. {o.get('pack',0)} UC ба ҳисоби шумо баргардонда шуд.")
-            except:
-                pass
-            await q.message.reply_text("❌ Рад шуд ва корбар баргардонида шуд.")
-            return
-    await q.message.reply_text("Фармоиш ёфт нашуд.")
-
-# Admin helper to process pending orders older than 12 hours (auto-confirm)
-async def process_pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if int(update.message.from_user.id) not in ADMIN_IDS:
-        await update.message.reply_text("🚫 Танҳо админ.")
-        return
-    now = datetime.datetime.now()
-    processed = 0
-    for o in orders:
-        if o.get("type") == "free_uc" and o.get("status") == "pending_admin":
-            created = o.get("created_at")
-            try:
-                created_dt = datetime.datetime.strptime(created, "%Y-%m-%d %H:%M:%S")
-            except:
-                continue
-            if (now - created_dt).total_seconds() >= 12 * 3600:
-                # auto-confirm
-                o["status"] = "confirmed"
-                o["confirmed_at"] = now_str()
-                try:
-                    uid = int(o["user_id"])
-                    await context.bot.send_message(uid, f"✅ Дархости UC (№{o['id']}) ба таври автоматӣ пас аз 12 соат тасдиқ шуд. {o.get('pack')} UC ба ҳисоби шумо ворид шуд.")
-                except:
-                    pass
-                processed += 1
-    if processed:
-        save_all()
-    await update.message.reply_text(f"✅ Иҷро шуд: {processed} фармоиш(ҳо) коркард шуданд.")
-
-# -------------------- Invite link handler --------------------
-async def invite_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message:
-        user = update.message.from_user
-        uid = user.id
-        link = f"https://t.me/{BOT_USERNAME}?start=invite_{uid}"
-        await update.message.reply_text(f"🔗 Инро ба дустат фирист:\n{link}\n\nҲар дафъа дӯсти нав тавассути ин линк сабт шавад — шумо 2 UC мегиред.")
-
-# -------------------- Receive payment photo (store) --------------------
-async def receive_payment_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
-    matching = None
-    for o in reversed(orders):
-        if str(o.get("user_id")) == user_id and o.get("status") == "awaiting_payment":
-            matching = o
-            break
-    if not matching:
-        await update.message.reply_text("⚠️ Ҳеҷ фармоиши интизори пардохт ёфт нашуд.")
-        return
-    if not update.message.photo:
-        await update.message.reply_text("⚠️ Лутфан скриншот фиристед.")
-        return
-    photo = update.message.photo[-1]
-    file_id = photo.file_id
-    matching["status"] = "proof_sent"
-    matching["payment_proof_file_id"] = file_id
-    save_all()
-    for admin in ADMIN_IDS:
-        try:
-            btn = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Қабул", callback_data=f"payment_accept_{matching['id']}_{user_id}"),
-                 InlineKeyboardButton("❌ Рад", callback_data=f"payment_reject_{matching['id']}_{user_id}")]
-            ])
-            await context.bot.send_photo(admin, file_id,
-                caption=f"📸 Скриншоти пардохт барои фармоиш №{matching['id']}\n{matching.get('total','—')} TJS",
-                reply_markup=btn)
-        except:
-            pass
-    await update.message.reply_text("✅ Скриншот қабул шуд. Админ онро тафтиш мекунад.")
-
-# -------------------- Callback router --------------------
-async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    if not q or not q.data:
-        return
-    data = q.data
-    if data.startswith("select_"):
-        await select_item_callback(update, context)
-    elif data.startswith("addcart_"):
-        item_id = int(data.split("_")[1])
-        uid = str(q.from_user.id)
-        user_carts.setdefault(uid, {})
-        user_carts[uid][item_id] = user_carts[uid].get(item_id,0) + 1
-        await q.answer("✅ Илова шуд")
-    elif data == "back_main":
-        await show_main_menu(q.message.chat, str(q.from_user.id))
-    elif data == "check_sub_ucfree":
-        await check_sub_callback(update, context)
-    elif data == "daily_uc":
-        await daily_uc_roll(update, context)
-    elif data == "my_uc":
-        await my_uc_info(update, context)
-    elif data in ("claim_60","claim_325"):
-        await claim_uc_button(update, context)
-    elif data.startswith("admin_confirm_free_"):
-        await admin_confirm_free(update, context)
-    elif data.startswith("admin_reject_free_"):
-        await admin_reject_free(update, context)
-    else:
-        await q.answer()
-
-# -------------------- Text handler --------------------
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (update.message.text or "").strip()
-    user_id = str(update.message.from_user.id)
-    if broadcast_mode.get(user_id):
-        msg = text
-        count = 0
-        for uid in list(users_data.keys()):
-            try:
-                await context.bot.send_message(int(uid), f"📣 Паём аз админ:\n\n{msg}")
-                count += 1
-            except:
-                pass
-        await update.message.reply_text(f"✅ Паём ба {count} корбар фиристода шуд.")
-        broadcast_mode[user_id] = False
-        return
-    if context.user_data.get("awaiting_game_id"):
-        await get_game_id(update, context)
-        return
-    if "awaiting_free_id" in context.user_data:
-        await get_free_uc_id(update, context)
-        return
-    if "captcha_answer" in context.user_data:
-        await handle_captcha_answer(update, context)
-        return
-    if text == "🛍 Каталог":
-        await catalog_handler(update, context)
-    elif text == "🔗 Даъвати дӯстон":
-        await invite_button_handler(update, context)
-    elif text == "🎁 UC ройгон":
-        await free_uc_menu_entry(update, context)
-    elif text == "ℹ Маълумот":
-        await update.message.reply_text(ADMIN_INFO)
-    elif text == "👑 Панели админ" and int(user_id) in ADMIN_IDS:
-        buttons = [
-            [InlineKeyboardButton("📋 Рӯйхати корбарон", callback_data="admin_users"),
-             InlineKeyboardButton("📦 Фармоишҳо", callback_data="admin_orders")],
-            [InlineKeyboardButton("📣 Паём ба корбарон", callback_data="admin_broadcast")],
-            [InlineKeyboardButton("⬅️ Бозгашт", callback_data="back_main")]
-        ]
-        await update.message.reply_text("👑 Панели админ:", reply_markup=InlineKeyboardMarkup(buttons))
-    else:
-        await update.message.reply_text("🤖 Лутфан аз тугмаҳо истифода баред.")
-
-# -------------------- Checkout minimal --------------------
-async def checkout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    uid = str(q.from_user.id)
-    cart = user_carts.get(uid,{})
-    if not cart:
-        await q.message.reply_text("🛒 Сабад холист.")
-        return
-    await q.message.reply_text("🎮 Лутфан ID-и бозии худро ворид кунед (фақат рақамҳо):")
-    context.user_data["awaiting_game_id"] = True
-    context.user_data["pending_order_total"] = sum(ITEMS[i]["price"]*q for i,q in cart.items())
-
-async def get_game_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("awaiting_game_id"):
-        return
-    game_id = (update.message.text or "").strip()
-    if not game_id.isdigit():
-        await update.message.reply_text("⚠️ Танҳо рақам ворид кунед.")
-        return
-    context.user_data["awaiting_game_id"] = False
-    uid = str(update.message.from_user.id)
-    total = context.user_data.get("pending_order_total",0)
-    order_id = random.randint(10000,99999)
-    order = {
-        "id": order_id,
-        "user_id": uid,
-        "username": users_data.get(uid,{}).get("username"),
-        "phone": users_data.get(uid,{}).get("phone"),
-        "total": total,
-        "type": "store",
-        "game_id": game_id,
-        "status": "pending",
-        "created_at": now_str()
-    }
-    orders.append(order)
-    save_all()
-    for admin in ADMIN_IDS:
-        try:
-            btn = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Тасдиқ", callback_data=f"admin_confirm_{order_id}"),
-                 InlineKeyboardButton("❌ Рад", callback_data=f"admin_reject_{order_id}")]
-            ])
-            await context.bot.send_message(admin,
-                f"📦 Фармоиши нав №{order_id}\n👤 @{order.get('username')}\n🎮 ID: {game_id}\n💰 {total} TJS",
-                reply_markup=btn)
-        except:
-            pass
-    await update.message.reply_text(f"✅ Фармоиши шумо №{order_id} сабт шуд! Мунтазир шавед барои тасдиқ аз админ.")
-    user_carts[uid] = {}
-
-# -------------------- Admin initial confirm/reject for store --------------------
-async def admin_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    try:
-        order_id = int(q.data.split("_")[-1])
-    except:
-        return
-    for o in orders:
-        if o["id"] == order_id:
-            if o["status"] != "pending":
-                await q.message.reply_text(f"Фармоиш дар ҳолати: {o['status']}")
-                return
-            o["status"] = "awaiting_payment"
-            save_all()
-            try:
-                await context.bot.send_message(int(o["user_id"]),
-                    f"💳 Барои анҷом додани пардохт, лутфан ба рақами VISA пардохт кунед: {VISA_NUMBER}\nПас аз пардохт скриншот фиристед.")
-            except:
-                pass
-            await q.message.reply_text("📨 Рақами VISA ба корбар фиристода шуд.")
-            return
-    await q.message.reply_text("Фармоиш ёфт нашуд.")
-
-async def admin_reject_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    try:
-        order_id = int(q.data.split("_")[-1])
-    except:
-        return
-    for o in orders:
-        if o["id"] == order_id:
-            if o["status"] != "pending":
-                await q.message.reply_text(f"Фармоиш дар ҳолати: {o['status']}")
-                return
             o["status"] = "rejected"
             save_all()
             try:
-                await context.bot.send_message(int(o["user_id"]),
-                    f"❌ Фармоиши шумо №{order_id} рад шуд.")
+                await context.bot.send_message(int(o["user_id"]), f"❌ Дархост (№{order_id}) рад шуд. Лутфан бо админ тамос гиред.")
             except:
                 pass
             await q.message.reply_text("❌ Рад шуд.")
             return
     await q.message.reply_text("Фармоиш ёфт нашуд.")
 
+# -------------------- Callback router --------------------
+async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    data = query.data
+
+    # Store catalog
+    if data.startswith("select_"):
+        await select_item_callback(update, context)
+    elif data.startswith("addcart_"):
+        await addcart_callback(update, context)
+    elif data.startswith("addwish_"):
+        await addwish_callback(update, context)
+    elif data.startswith("removewish_"):
+        await removewish_callback(update, context)
+    elif data == "clear_cart":
+        await clear_cart_callback(update, context)
+    elif data == "checkout":
+        await checkout_callback(update, context)
+    elif data == "back_main":
+        uid = str(query.from_user.id)
+        await show_main_menu(query.message.chat, uid)
+
+    # Admin store confirm/reject
+    elif data.startswith("admin_confirm_"):
+        await admin_confirm_callback(update, context)
+    elif data.startswith("admin_reject_"):
+        await admin_reject_callback(update, context)
+
+    # Payment accept/reject
+    elif data.startswith("payment_accept_") or data.startswith("payment_reject_"):
+        await callback_payment_accept_reject(update, context)
+
+    # Admin panel actions
+    elif data.startswith("admin_"):
+        await admin_panel_callback(update, context)
+
+    # Free UC callbacks
+    elif data == "check_sub_ucfree":
+        await check_sub_callback(update, context)
+    elif data == "daily_uc":
+        await daily_uc_roll(update, context)
+    elif data == "my_uc":
+        await my_uc_info(update, context)
+    elif data in ["claim_60", "claim_325"]:
+        await claim_uc_button(update, context)
+    elif data.startswith("admin_confirm_free_"):
+        await admin_confirm_free(update, context)
+    elif data.startswith("admin_reject_free_"):
+        await admin_reject_free(update, context)
+    else:
+        await query.answer()
+
 # -------------------- Commands --------------------
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Фармонҳо: /start, /help, /about, /process_pending (админ)")
+    await update.message.reply_text("🆘 Фармонҳо: /start, /help, /about, /users (админ)")
 
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(ADMIN_INFO)
 
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if int(update.message.from_user.id) not in ADMIN_IDS:
-        await update.message.reply_text("🚫 Танхо админ.")
+        await update.message.reply_text("🚫 Танҳо админ!")
         return
-    text = "Рӯйхати корбарон:\n"
+    if not users_data:
+        await update.message.reply_text("Ҳеҷ корбар сабт нашудааст.")
+        return
+    text = "📋 Рӯйхати корбарон:\n\n"
     for u in users_data.values():
-        text += f"{u.get('id')} — {u.get('username')} — {u.get('phone')} — free_uc:{u.get('free_uc',0)}\n"
+        text += f"👤 {u.get('name','—')} — {u.get('phone','—')} (id: {u.get('id')})\n"
     await update.message.reply_text(text)
 
-async def process_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await process_pending_command(update, context)
+# -------------------- Extra commands --------------------
+async def catalog_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await catalog_handler(update, context)
 
-# -------------------- Main --------------------
+async def cart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await show_cart_from_text(update, context)
+
+async def wishlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await open_wishlist_from_text(update, context)
+
+async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(ADMIN_INFO)
+
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = int(update.message.from_user.id)
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("🚫 Танҳо админ!")
+        return
+    buttons = [
+        [InlineKeyboardButton("📋 Рӯйхати корбарон", callback_data="admin_users"),
+         InlineKeyboardButton("📦 Фармоишҳо", callback_data="admin_orders")],
+        [InlineKeyboardButton("📣 Паём ба корбарон", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("⬅️ Бозгашт", callback_data="back_main")]
+    ]
+    await update.message.reply_text("👑 Панели админ:", reply_markup=InlineKeyboardMarkup(buttons))
+
+# -------------------- Text router (combines get_game_id and handle_text) --------------------
+async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # If waiting for checkout game ID
+    if context.user_data.get("awaiting_game_id"):
+        await get_game_id(update, context)
+        return
+    # If waiting for free-uc ID
+    if "awaiting_free_id" in context.user_data:
+        await get_free_uc_id(update, context)
+        return
+    # else regular text handling
+    await handle_text(update, context)
+
+# -------------------- Main run --------------------
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
+
+    # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("about", about_command))
     app.add_handler(CommandHandler("users", users_command))
-    app.add_handler(CommandHandler("process_pending", process_pending))
+
+    # Extra commands
+    app.add_handler(CommandHandler("catalog", catalog_command))
+    app.add_handler(CommandHandler("cart", cart_command))
+    app.add_handler(CommandHandler("wishlist", wishlist_command))
+    app.add_handler(CommandHandler("info", info_command))
+    app.add_handler(CommandHandler("admin", admin_command))
+
+    # Contact (phone)
     app.add_handler(MessageHandler(filters.CONTACT, get_contact))
+
+    # CallbackQuery
     app.add_handler(CallbackQueryHandler(callback_router))
+
+    # Photos (payment proofs)
     app.add_handler(MessageHandler(filters.PHOTO, receive_payment_photo))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
-    print("Bot started")
+
+    # Text messages (menu buttons & awaiting inputs)
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), text_router))
+
+    print("✅ UCstore бот фаъол шуд!")
     app.run_polling()
 
 if __name__ == "__main__":
