@@ -24,7 +24,7 @@ from telegram.ext import (
 import asyncio, random, datetime, json, os, traceback
 
 # -------------------- Конфиг --------------------
-"8524676045:AAHXHO6tYovrMAAGxAQZUi2Z-TGFBUPeMyY"  # <-- ЗАҲИРА: ИНРО БА ТОКЕНИ ШАХСИИ ШУМО ИВАЗ КУНЕД
+TOKEN = "8524676045:AAHXHO6tYovrMAAGxAQZUi2Z-TGFBUPeMyY"  # <-- ЗАҲИРА: ИНРО БА ТОКЕНИ ШАХСИИ ШУМО ИВАЗ КУНЕД
 ADMIN_IDS = [8436218638]  # ID-ҳои админҳо (мисол)
 USERS_FILE = "users.json"
 ORDERS_FILE = "orders.json"
