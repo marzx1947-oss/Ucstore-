@@ -1,4 +1,4 @@
-# UCstore.py — Cleaned, formatted and slightly optimized version
+# UCstore.py — Fixed version
 # NOTE: Replace TOKEN with your bot token before running.
 
 from telegram import (
@@ -40,7 +40,33 @@ ITEMS = {
 }
 
 ADMIN_INFO = (
-    "UCstore — ин боти расмии фурӯши UC барои PUBG Mobile ва дигар хидматҳои рақамии бозӣ мебошад."
+    "UCstore — ин боти расмии фурӯши UC барои PUBG Mobile ва дигар хидматҳои рақамии бозӣ мебошад. Мо барои бозингарони тоҷик платформаи боэътимод, босифат ва осонро фароҳам овардаем, то харид кардан осон, бехатар ва зуд сурат гирад. ⚡️
+
+🔹 Афзалиятҳои UCstore:
+
+🎁 UC-и ройгон 
+
+🫴Мо ба шумо ҳаруз аз 1 то 5 uc-и ройгон медиҳем ва инчунин бо даъвати ҳар як дуст шумо 2 uc ба даст меоред.
+
+• 🛍 Каталоги пурра бо нархҳои дастрас
+• 💳 Усулҳои гуногуни пардохт (аз ҷумла роҳи нави корти милли ва  VISA)
+• ⚙️ Системаи автоматии фармоиш ва тасдиқ
+• 💬 Пуштибонии зуд аз ҷониби админ
+• ❤️ Имкони илова ба “дилхоҳҳо” ва сабади шахсӣ
+• 🔔 Огоҳии фаврӣ дар бораи ҳолати фармоиш
+
+📦 Чӣ тавр кор мекунад:
+1️⃣ Ба бот ворид шавед
+2️⃣ Маҳсулоти дилхоҳатонро интихоб кунед
+3️⃣ Фармоиш диҳед ва пардохтро анҷом диҳед
+4️⃣ Мунтазир шавед — UC ба ҳисоби шумо фиристода мешавад 🎁
+
+🤝 Бартарии мо — шаффофият, суръат ва эътимод.
+Ҳар як фармоиш боэҳтиёт санҷида мешавад, то мизоҷон таҷрибаи беҳтарин гиранд.
+
+Бо UCstore шумо ҳамеша бехатар, зуд ва бо эътимод харид мекунед 💪
+
+Инчунин дар бораи тамоми мушкилот шумо ҳамеша метавонед ба админ тамос гиред @MARZBON_TJ"
 )
 
 VISA_NUMBER = "4439200020432471"
@@ -124,7 +150,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔐 Барои истифодаи бот рақами телефони худро фиристед:", reply_markup=reply_markup
     )
 
-
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Save contact and create user record
     contact = update.message.contact
@@ -151,14 +176,15 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Handle inviter stored in user_data (if /start payload was used)
     inviter = context.user_data.get("invited_by")
-    if inviter and inviter != user_id and inviter in users_data:
-        users_data[inviter]["free_uc"] = users_data[inviter].get("free_uc", 0) + 2
+    if inviter and inviter != user_id and str(inviter) in users_data:
+        inv = str(inviter)
+        users_data[inv]["free_uc"] = users_data[inv].get("free_uc", 0) + 2
         save_all()
         try:
             await context.bot.send_message(
-                int(inviter),
-                f"🎉 Шумо 2 UC барои даъват кардани корбари нав гирифтед!
-👤 @{user.username or user.first_name}"
+                int(inv),
+                f"🎉 Шумо 2 UC барои даъват кардани корбари нав гирифтед!\n"
+                f"👤 @{user.username or user.first_name}"
             )
         except Exception:
             pass
@@ -169,15 +195,10 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(
                 admin,
                 (
-                    f"👤 Корбари нав сабт шуд!
-
-"
-                    f"🧑 Ном: {user.first_name}
-"
-                    f"📱 Рақам: {contact.phone_number}
-"
-                    f"🔗 @{user.username or '—'}
-"
+                    "👤 Корбари нав сабт шуд!\n\n"
+                    f"🧑 Ном: {user.first_name}\n"
+                    f"📱 Рақам: {contact.phone_number}\n"
+                    f"🔗 @{user.username or '—'}\n"
                     f"🔑 Код: {user_code}"
                 ),
             )
@@ -185,11 +206,12 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     await update.message.reply_text(
-        f"✅ Шумо бо муваффақият ворид шудед!!
-🔑 Код шумо: {user_code}", reply_markup=ReplyKeyboardRemove()
+        f"✅ Шумо бо муваффақият ворид шудед!!\n"
+        f"🔑 Код шумо: {user_code}",
+        reply_markup=ReplyKeyboardRemove()
     )
-    await show_main_menu(update.message.chat, user_id)
 
+    await show_main_menu(update.message.chat, user_id)
 
 async def show_main_menu(chat, user_id: str):
     buttons = [
@@ -304,8 +326,7 @@ async def removewish_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.message.delete()
     except Exception:
         pass
-
-
+        
 # Cart and checkout
 async def show_cart_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
@@ -313,8 +334,8 @@ async def show_cart_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not cart:
         await update.message.reply_text("🛒 Сабад холист.")
         return
-    text = "🛍 Маҳсулоти шумо:
-"
+
+    text = "🛍 Маҳсулоти шумо:\n"
     total = 0
     for i, qty in cart.items():
         item = ITEMS.get(i)
@@ -322,10 +343,10 @@ async def show_cart_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             continue
         subtotal = item["price"] * qty
         total += subtotal
-        text += f"- {item['name']} x{qty} = {subtotal} TJS
-"
-    text += f"
-💰 Ҳамагӣ: {total} TJS"
+        
+        text += f"- {item['name']} x{qty} = {subtotal} TJS\n"
+        
+    text += f"💰 Ҳамагӣ: {total} TJS"
 
     buttons = [
         [InlineKeyboardButton("📦 Фармоиш додан", callback_data="checkout"),
@@ -333,8 +354,7 @@ async def show_cart_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         [InlineKeyboardButton("⬅️ Бозгашт", callback_data="back_main")],
     ]
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-
-
+    
 async def clear_cart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer("🧹 Сабад тоза шуд!")
@@ -371,25 +391,22 @@ async def get_game_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order["game_id"] = game_id
     save_all()
 
+    # Notify admins with confirm/reject buttons
+    buttons = [
+        [
+            InlineKeyboardButton("✅ Тасдиқ", callback_data=f"admin_confirm_{order['id']}"),
+            InlineKeyboardButton("❌ Рад", callback_data=f"admin_reject_{order['id']}"),
+        ]
+    ]
     for admin in ADMIN_IDS:
         try:
-            buttons = [
-                [
-                    InlineKeyboardButton("✅ Тасдиқ", callback_data=f"admin_confirm_{order['id']}"),
-                    InlineKeyboardButton("❌ Рад", callback_data=f"admin_reject_{order['id']}"),
-                ]
-            ]
             await context.bot.send_message(
                 admin,
                 (
-                    f"📦 Фармоиши нав №{order['id']} аз @{order['username'] or order['user_name']}
-"
-                    f"🎮 ID: {game_id}
-"
-                    f"📱 {order['phone']}
-"
-                    f"💰 {order['total']} TJS
-"
+                    f"📦 Фармоиши нав №{order['id']} аз @{order['username'] or order['user_name']}\n"
+                    f"🎮 ID: {game_id}\n"
+                    f"📱 {order['phone']}\n"
+                    f"💰 {order['total']} TJS\n"
                     f"🕒 {order['time']}"
                 ),
                 reply_markup=InlineKeyboardMarkup(buttons),
@@ -398,9 +415,9 @@ async def get_game_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     await update.message.reply_text(
-        f"✅ Фармоиши шумо №{order['id']} сабт шуд!
-🎮 ID-и шумо: {game_id}
-Мунтазир шавед барои тасдиқ аз админ."
+        f"✅ Фармоиши шумо №{order['id']} сабт шуд!\n"
+        f"🎮 ID-и шумо: {game_id}\n"
+        "Мунтазир шавед барои тасдиқ аз админ."
     )
     user_carts[user_id] = {}
 
@@ -441,10 +458,8 @@ async def receive_payment_photo(update: Update, context: ContextTypes.DEFAULT_TY
                 chat_id=admin,
                 photo=file_id,
                 caption=(
-                    f"📸 Скриншоти пардохт аз @{update.message.from_user.username or update.message.from_user.first_name}
-"
-                    f"📦 Фармоиш №{matching['id']}
-💰 {matching.get('total','—')} TJS"
+                    f"📸 Скриншоти пардохт аз @{update.message.from_user.username or update.message.from_user.first_name}\n"
+                    f"📦 Фармоиш №{matching['id']}\n💰 {matching.get('total','—')} TJS"
                 ),
                 reply_markup=InlineKeyboardMarkup(buttons),
             )
@@ -567,8 +582,7 @@ async def daily_uc_roll(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user["last_daily_uc"] = now.strftime("%Y-%m-%d %H:%M:%S")
     users_data[user_id] = user
     save_all()
-    await q.message.reply_text(f"🎉 Шумо {roll} UC гирифтед!
-📊 Ҳамагӣ: {user['free_uc']} UC")
+    await q.message.reply_text(f"🎉 Шумо {roll} UC гирифтед!\n📊 Ҳамагӣ: {user['free_uc']} UC")
 
 
 async def my_uc_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -644,10 +658,7 @@ async def get_free_uc_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
             await context.bot.send_message(
                 admin,
-                f"📦 Фармоиши UC ройгон №{order_id}
-👤 @{order['username']}
-🎮 ID: {t}
-🎁 Пакет: {amount} UC",
+                f"📦 Фармоиши UC ройгон №{order_id}\n👤 @{order['username']}\n🎮 ID: {t}\n🎁 Пакет: {amount} UC",
                 reply_markup=btn,
             )
         except Exception:
@@ -717,11 +728,7 @@ async def admin_confirm_callback(update: Update, context: ContextTypes.DEFAULT_T
             try:
                 await context.bot.send_message(
                     int(o["user_id"]),
-                    f"💳 Барои анҷом додани пардохт, лутфан ба рақами VISA зер пардохт кунед:
-
-🔹 {VISA_NUMBER}
-
-Пас аз пардохт, скриншоти тасдиқро ба ин ҷо фиристед 📸",
+                    f"💳 Барои анҷом додани пардохт, лутфан ба рақами VISA зер пардохт кунед:\n\n🔹 {VISA_NUMBER}\n\nПас аз пардохт, скриншоти тасдиқро ба ин ҷо фиристед 📸",
                 )
             except Exception:
                 pass
@@ -767,11 +774,7 @@ async def invite_link_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     invite_url = f"https://t.me/{bot_username}?start=invite_{uid}"
     await q.message.reply_text(
-        "🔗 Ин линкро ба дӯстонат фирист:
-
-" + invite_url + "
-
-Ҳар дӯсте, ки сабт мешавад → ту 2 UC мегирӣ!"
+        "🔗 Ин линкро ба дӯстонат фирист:\n\n" + invite_url + "\n\nҲар дӯсте, ки сабт мешавад → ту 2 UC мегирӣ!"
     )
 
 
@@ -790,8 +793,7 @@ async def admin_panel_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("⬅️ Бозгашт", callback_data="back_main")],
         ]
         await query.message.edit_text(
-            "⚙️ *Панели Администратор*
-Дар ин ҷо ту тамоми мағоза ва корбарҳоро идора мекунӣ.",
+            "⚙️ *Панели Администратор*\nДар ин ҷо ту тамоми мағоза ва корбарҳоро идора мекунӣ.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
@@ -801,12 +803,9 @@ async def admin_panel_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not users_data:
             text = "📋 Ҳоло ҳеҷ корбар нест."
         else:
-            text = "📋 *Рӯйхати корбарон:*
-
-"
+            text = "📋 *Рӯйхати корбарон:*\n\n"
             for uid, u in users_data.items():
-                text += f"• {u.get('name','—')} — {u.get('phone','—')} (id: {uid})
-"
+                text += f"• {u.get('name','—')} — {u.get('phone','—')} (id: {uid})\n"
         await query.message.edit_text(
             text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Бозгашт", callback_data="admin_panel")]])
         )
@@ -816,12 +815,9 @@ async def admin_panel_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not orders:
             text = "❗ Ҳоло ҳеҷ заказ нест."
         else:
-            text = "📦 *Рӯйхати заказҳо:*
-
-"
+            text = "📦 *Рӯйхати заказҳо:*\n\n"
             for o in orders:
-                text += f"#{o['id']} — @{o.get('username') or o.get('user_name','-')} — {o.get('total', o.get('pack',0))} — {o['status']}
-"
+                text += f"#{o['id']} — @{o.get('username') or o.get('user_name','-')} — {o.get('total', o.get('pack',0))} — {o['status']}\n"
         await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Бозгашт", callback_data="admin_panel")]]))
         return
 
@@ -842,9 +838,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count = 0
         for uid in list(users_data.keys()):
             try:
-                await context.bot.send_message(int(uid), f"📣 Паём аз админ:
-
-{msg}")
+                await context.bot.send_message(int(uid), f"📣 Паём аз админ:\n\n{msg}")
                 count += 1
             except Exception:
                 pass
@@ -964,12 +958,9 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not users_data:
         await update.message.reply_text("Ҳеҷ корбар сабт нашудааст.")
         return
-    text = "📋 Рӯйхати корбарон:
-
-"
+    text = "📋 Рӯйхати корбарон:\n\n"
     for u in users_data.values():
-        text += f"👤 {u.get('name','—')} — {u.get('phone','—')} (id: {u.get('id')})
-"
+        text += f"👤 {u.get('name','—')} — {u.get('phone','—')} (id: {u.get('id')})\n"
     await update.message.reply_text(text)
 
 
