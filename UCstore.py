@@ -1,4 +1,4 @@
-# UCstore.py — Fixed version
+# UCstore.py — Full version (async, python-telegram-bot v20+)
 # NOTE: Replace TOKEN with your bot token before running.
 
 from telegram import (
@@ -17,7 +17,6 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-import asyncio
 import datetime
 import json
 import os
@@ -25,7 +24,7 @@ import random
 import string
 
 # -------------------- Config --------------------
-TOKEN = "8524676045:AAHXHO6tYovrMAAGxAQZUi2Z-TGFBUPeMyY"
+TOKEN = "8524676045:AAHXHO6tYovrMAAGxAQZUi2Z-TGFBUPeMyY"  # <-- change this
 ADMIN_IDS = [8436218638]
 USERS_FILE = "users.json"
 ORDERS_FILE = "orders.json"
@@ -40,36 +39,11 @@ ITEMS = {
 }
 
 ADMIN_INFO = (
-    """ UCstore — ин боти расмии фурӯши UC барои PUBG Mobile ва дигар хидматҳои рақамии бозӣ мебошад. Мо барои бозингарони тоҷик платформаи боэътимод, босифат ва осонро фароҳам овардаем, то харид кардан осон, бехатар ва зуд сурат гирад. ⚡️
-
-🔹 Афзалиятҳои UCstore:
-
-🎁 UC-и ройгон 
-
-🫴Мо ба шумо ҳаруз аз 1 то 5 uc-и ройгон медиҳем ва инчунин бо даъвати ҳар як дуст шумо 2 uc ба даст меоред.
-
-• 🛍 Каталоги пурра бо нархҳои дастрас
-• 💳 Усулҳои гуногуни пардохт (аз ҷумла роҳи нави корти милли ва  VISA)
-• ⚙️ Системаи автоматии фармоиш ва тасдиқ
-• 💬 Пуштибонии зуд аз ҷониби админ
-• ❤️ Имкони илова ба “дилхоҳҳо” ва сабади шахсӣ
-• 🔔 Огоҳии фаврӣ дар бораи ҳолати фармоиш
-
-📦 Чӣ тавр кор мекунад:
-1️⃣ Ба бот ворид шавед
-2️⃣ Маҳсулоти дилхоҳатонро интихоб кунед
-3️⃣ Фармоиш диҳед ва пардохтро анҷом диҳед
-4️⃣ Мунтазир шавед — UC ба ҳисоби шумо фиристода мешавад 🎁
-
-🤝 Бартарии мо — шаффофият, суръат ва эътимод.
-Ҳар як фармоиш боэҳтиёт санҷида мешавад, то мизоҷон таҷрибаи беҳтарин гиранд.
-
-Бо UCstore шумо ҳамеша бехатар, зуд ва бо эътимод харид мекунед 💪
-
-Инчунин дар бораи тамоми мушкилот шумо ҳамеша метавонед ба админ тамос гиред @MARZBON_TJ """
+    "UCstore — ин боти расмии фурӯши UC барои PUBG Mobile ва дигар хидматҳои рақамии бозӣ мебошад."
 )
 
 VISA_NUMBER = "4439200020432471"
+SBER_NUMBER = "2202208496090011"
 FREE_UC_CHANNEL = "@marzbon_chanel"
 
 # -------------------- Persistence --------------------
@@ -383,92 +357,191 @@ async def get_game_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not game_id.isdigit():
         await update.message.reply_text("⚠️ Лутфан танҳо рақам ворид кунед (ID-и бозӣ бояд рақам бошад).")
         return
+
     context.user_data["awaiting_game_id"] = False
 
     user_id = str(update.message.from_user.id)
     total = context.user_data.pop("pending_order_total", 0)
+
+    # Create order and ask for payment method
     order = _create_order_record(user_id, total)
     order["game_id"] = game_id
+    order["status"] = "choose_payment"
     save_all()
 
-    # Notify admins with confirm/reject buttons
+    # Two payment buttons
     buttons = [
-        [
-            InlineKeyboardButton("✅ Тасдиқ", callback_data=f"admin_confirm_{order['id']}"),
-            InlineKeyboardButton("❌ Рад", callback_data=f"admin_reject_{order['id']}"),
-        ]
+        [InlineKeyboardButton("💳 Пардохт VISA", callback_data=f"pay_visa_{order['id']}")],
+        [InlineKeyboardButton("🏦 Пардохт SberBank", callback_data=f"pay_sber_{order['id']}")]
     ]
-    for admin in ADMIN_IDS:
-        try:
-            await context.bot.send_message(
-                admin,
-                (
-                    f"📦 Фармоиши нав №{order['id']} аз @{order['username'] or order['user_name']}\n"
-                    f"🎮 ID: {game_id}\n"
-                    f"📱 {order['phone']}\n"
-                    f"💰 {order['total']} TJS\n"
-                    f"🕒 {order['time']}"
-                ),
-                reply_markup=InlineKeyboardMarkup(buttons),
-            )
-        except Exception:
-            pass
 
     await update.message.reply_text(
-        f"✅ Фармоиши шумо №{order['id']} сабт шуд!\n"
-        f"🎮 ID-и шумо: {game_id}\n"
-        "Мунтазир шавед барои тасдиқ аз админ."
+        f"Фармоиш №{order['id']} \n"
+        f"🎮 ID: {game_id}\n"
+        f"💰 Нархи умумӣ: {total} TJS\n\n"
+        "Лутфан тарзи пардохтро интихоб кунед:",
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
-    user_carts[user_id] = {}
 
+# New: payment method selection handler
+async def payment_method_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-# Payment flow handlers
+    data = query.data
+    parts = data.split("_")
+    # expected: pay_visa_{id} or pay_sber_{id}
+    if len(parts) < 3:
+        await query.message.reply_text("⚠️ Формати маълумот нодуруст аст.")
+        return
+
+    method = parts[1]          # visa / sber
+    try:
+        order_id = int(parts[2])
+    except Exception:
+        await query.message.reply_text("⚠️ Формати фармоиш нодуруст аст.")
+        return
+
+    # choose card and name
+    if method == "visa":
+        card = VISA_NUMBER
+        method_name = "VISA"
+    else:
+        card = SBER_NUMBER
+        method_name = "SberBank"
+
+    # find order
+    for order in orders:
+        if order["id"] == order_id:
+            order["status"] = "awaiting_proof"
+            order["payment_method"] = method_name
+            save_all()
+
+            await query.message.reply_text(
+                f"💳 Тарзи пардохт: {method_name}\n"
+                f"📌 Рақами корт/ҳисоб: {card}\n\n"
+                "Пас аз пардохт, лутфан квитанцияро ҳамчун акс ё файл ба ин чат фиристед."
+            )
+            return
+
+    await query.message.reply_text("⚠️ Фармоиш ёфт нашуд.")
+
+# Payment proof receive (photo or document)
 async def receive_payment_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Either photo or document
     user_id = str(update.message.from_user.id)
-    matching = None
+
+    # Find last order from this user that is awaiting proof
+    order = None
     for o in reversed(orders):
-        if str(o.get("user_id")) == user_id and o.get("status") == "awaiting_payment":
-            matching = o
+        if str(o.get("user_id")) == user_id and o.get("status") == "awaiting_proof":
+            order = o
             break
 
-    if not matching:
-        await update.message.reply_text("⚠️ Ҳеҷ фармоиши интизори пардохт ёфт нашуд. Лутфан аз админ тасдиқ гиред.")
+    if not order:
+        await update.message.reply_text("⚠️ Шумо ҳоло фармоиши интизори квитанция надоред.")
         return
 
-    if not update.message.photo:
-        await update.message.reply_text("⚠️ Лутфан скриншот (photo) фиристед.")
+    # Accept photo or document
+    file_id = None
+    is_photo = False
+    if update.message.photo:
+        file_id = update.message.photo[-1].file_id
+        is_photo = True
+    elif update.message.document:
+        file_id = update.message.document.file_id
+        is_photo = False
+    else:
+        await update.message.reply_text("⚠️ Лутфан акс ё файл равон кунед!")
         return
 
-    photo = update.message.photo[-1]
-    file_id = photo.file_id
-
-    matching["status"] = "proof_sent"
-    matching["payment_proof_file_id"] = file_id
+    order["status"] = "proof_sent"
+    order["proof_file"] = file_id
     save_all()
 
-    for admin in ADMIN_IDS:
-        buttons = [
-            [
-                InlineKeyboardButton("✅ Қабул", callback_data=f"payment_accept_{matching['id']}_{user_id}"),
-                InlineKeyboardButton("❌ Рад", callback_data=f"payment_reject_{matching['id']}_{user_id}"),
-            ]
+    # Build caption for admin
+    caption = (
+        f"📦 Фармоиши №{order['id']}\n"
+        f"👤 @{order.get('username') or order.get('user_name')}\n"
+        f"🎮 ID: {order.get('game_id')}\n"
+        f"💰 {order.get('total')} TJS\n"
+        f"💳 Тарзи пардохт: {order.get('payment_method')}\n"
+        f"📱 Рақами корбар: {order.get('phone') or '—'}\n"
+        f"🕒 {order.get('time')}"
+    )
+
+    buttons = [
+        [
+            InlineKeyboardButton("✅ Тасдиқ", callback_data=f"pay_confirm_{order['id']}"),
+            InlineKeyboardButton("❌ Рад", callback_data=f"pay_reject_{order['id']}")
         ]
+    ]
+
+    for admin in ADMIN_IDS:
         try:
-            await context.bot.send_photo(
-                chat_id=admin,
-                photo=file_id,
-                caption=(
-                    f"📸 Скриншоти пардохт аз @{update.message.from_user.username or update.message.from_user.first_name}\n"
-                    f"📦 Фармоиш №{matching['id']}\n💰 {matching.get('total','—')} TJS"
-                ),
-                reply_markup=InlineKeyboardMarkup(buttons),
-            )
+            if is_photo:
+                await context.bot.send_photo(
+                    chat_id=admin,
+                    photo=file_id,
+                    caption=caption,
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                )
+            else:
+                await context.bot.send_document(
+                    chat_id=admin,
+                    document=file_id,
+                    caption=caption,
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                )
         except Exception:
             pass
 
-    await update.message.reply_text("✅ Скриншот қабул шуд! Мунтазир шавед, то админ онро тасдиқ кунад.")
+    await update.message.reply_text("✅ Квитанция қабул шуд! Мунтазир шавед, то админ тасдиқ кунад.")
 
 
+# Admin confirm/reject for payments (pay_confirm_, pay_reject_)
+async def admin_payment_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    parts = query.data.split("_")
+    # expected forms: pay_confirm_{id} or pay_reject_{id}
+    if len(parts) < 3:
+        await query.message.reply_text("⚠️ Формати маълумот нодуруст аст.")
+        return
+
+    action = parts[1]       # confirm / reject
+    try:
+        order_id = int(parts[2])
+    except Exception:
+        await query.message.reply_text("⚠️ Формати фармоиш нодуруст аст.")
+        return
+
+    for order in orders:
+        if order["id"] == order_id:
+            user_chat = int(order["user_id"])
+            if action == "confirm":
+                order["status"] = "confirmed"
+                save_all()
+                try:
+                    await context.bot.send_message(user_chat, f"✅ Пардохти шумо барои фармоиши №{order_id} тасдиқ шуд! Ташаккур.")
+                except Exception:
+                    pass
+                await query.message.reply_text(f"✅ Фармоиш №{order_id} тасдиқ шуд.")
+            else:
+                order["status"] = "rejected"
+                save_all()
+                try:
+                    await context.bot.send_message(user_chat, f"❌ Пардохти шумо барои фармоиши №{order_id} рад шуд. Лутфан бо админ тамос гиред.")
+                except Exception:
+                    pass
+                await query.message.reply_text(f"❌ Фармоиш №{order_id} рад шуд.")
+            return
+
+    await query.message.reply_text("⚠️ Фармоиш ёфт нашуд.")
+
+
+# Existing callback handlers for other flows remain (payment_accept/reject for another flow)
 async def callback_payment_accept_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -710,7 +783,7 @@ async def admin_reject_free(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_text("Фармоиш ёфт нашуд.")
 
 
-# Admin confirm/reject for paid orders
+# Admin confirm/reject for paid orders (original flow)
 async def admin_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -919,9 +992,17 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("admin_reject_"):
         await admin_reject_callback(update, context)
 
-    # Payment accept/reject
+    # Payment accept/reject (legacy)
     elif data.startswith("payment_accept_") or data.startswith("payment_reject_"):
         await callback_payment_accept_reject(update, context)
+
+    # NEW: payment method selection (VISA / SBER)
+    elif data.startswith("pay_visa_") or data.startswith("pay_sber_"):
+        await payment_method_callback(update, context)
+
+    # NEW: admin confirm/reject for proofs
+    elif data.startswith("pay_confirm_") or data.startswith("pay_reject_"):
+        await admin_payment_verify(update, context)
 
     # Free UC callbacks
     elif data == "check_sub_ucfree":
@@ -1019,11 +1100,11 @@ def main():
     # Contact handler
     app.add_handler(MessageHandler(filters.CONTACT, get_contact))
 
-    # CallbackQuery
+    # CallbackQuery (single router)
     app.add_handler(CallbackQueryHandler(callback_router))
 
-    # Photos
-    app.add_handler(MessageHandler(filters.PHOTO, receive_payment_photo))
+    # Photos & Documents (payment proofs)
+    app.add_handler(MessageHandler((filters.PHOTO | filters.Document.ALL) & (~filters.COMMAND), receive_payment_photo))
 
     # Text messages
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), text_router))
